@@ -1,0 +1,7 @@
+NODES=`cat /etc/hosts|grep -v -E 'localhost|mirrors'|awk '{print $2}'`
+
+for node in ${NODES[@]}
+do
+  echo "disable ${CLUSTER}-startup-master for $node"
+  ssh $node "mv /etc/rc.d/init.d/${CLUSTER}-startup-master /usr/lib/${CLUSTER}/"
+done

@@ -1,0 +1,21 @@
+#指定日志文件的绝对路径
+/var/log/messages
+{
+#大小超过100M才进行rotate
+size 100M
+#日志文件重命名后新建一个新的来继续
+create
+#保留两个日志文件
+rotate 2
+#复制当前日志文件后，将日志文件清空；而不是将当前日志改名后创建一个新的
+copytruncate
+#rotate前去掉只追加属性
+prerotate
+/usr/bin/chattr -a /var/log/messages
+endscript
+#rotate后重置rsyslogd并增加只追加属性,防止程序员或用户覆盖此文件
+postrotate
+/usr/bin/killall -HUP rsyslogd
+/usr/bin/chattr +a /var/log/messages
+endscript
+}
