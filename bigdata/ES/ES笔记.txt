@@ -1,0 +1,601 @@
+response was of unexpected text html contenttype
+
+incoming portion of html
+
+集群健康状态
+GET _cluster/health
+
+关闭自动创建索引
+每个节点的config/elasticsearch.yml文件添加如下配置：
+action.auto_create_index: false
+
+============索引管理start============
+
+创建索引
+PUT /my_index
+{
+    "settings": { ... },
+    "mappings": {
+        "type_one": { ... },
+        "type_two": { ... },
+        ...
+    }
+}
+#指定主分片和副本数量
+PUT /my_temp_index
+{
+    "settings": {
+        "number_of_shards" :   1,
+        "number_of_replicas" : 0
+    }
+}
+
+删除索引
+DELETE /index
+DELETE /index_one,index_two
+DELETE /index_*
+DELETE /_all（删除所有索引）
+
+配置解析器
+用来将全文字符串转换成适合搜索的倒排索引(Inverted Index)
+对于全文字符串字段默认使用的是standard解析器，它对于多数西方语言而言是一个不错的选择。它包括：
+1.standard分词器。它根据词语的边界进行分词。
+2.standard token过滤器。用来整理上一步分词器得到的tokens，但是目前是一个空操作(no-op)。
+3.lowercase token过滤器。将所有tokens转换为小写。
+4.stop token过滤器。移除所有的stopwords，比如a，the，and，is等
+
+默认下stopwords过滤器没有被使用。可以通过创建一个基于standard解析器的解析器并设置stopwords参数来启用。要么提供一个stopwords的列表或者告诉它使用针对某种语言预先定义的stopwords列表。
+在下面的例子中，我们创建了一个名为es_std的解析器，它使用了预先定义的西班牙语中的stopwords列表：
+
+PUT /spanish_docs
+{
+    "settings": {
+        "analysis": {
+            "analyzer": {
+                "es_std": {
+                    "type":      "standard",
+                    "stopwords": "_spanish_"
+                }
+            }
+        }
+    }
+}
+es_std解析器不是全局的 - 它只作用于spanish_docs索引。可以通过制定索引名，使用analyze API进行测试：
+GET /spanish_docs/_analyze?analyzer=es_std
+{
+    El veloz zorro marrón
+}
+
+自定义解析器
+虽然ES本身已经提供了一些解析器，但是通过组合字符过滤器(Character Filter)，分词器(Tokenizer)以及词条过滤器(Token Filter)来创建你自己的解析器才会显示出其威力
+字符过滤器(Character Filter) 字符过滤器用来在分词前将字符串进行"整理"，比如去掉HTML标签
+分词器(Tokenizers) 一个解析器必须有一个分词器。分词器将字符串分解成一个个单独的词条(Term or Token)
+词条过滤器能够修改，增加或者删除词条。有lowercase词条过滤器和stop词条过滤器等
+
+创建索引
+PUT /my_index
+{
+    "settings": {
+        "analysis": {
+		    #将&字符替换成" and "，使用一个自定义的mapping字符过滤器
+            "char_filter": {
+                "&_to_and": {
+                    "type":       "mapping",
+                    "mappings": [ "&=> and "]
+            }},
+			#使用一个自定义的stopword列表，并通过自定义的stop词条过滤器将它们移除
+            "filter": {
+                "my_stopwords": {
+                    "type":       "stop",
+                    "stopwords": [ "the", "a" ]
+            }},
+			#我们的解析器将预先定义的分词器和过滤器和自定义的过滤器进行了结合
+            "analyzer": {
+                "my_analyzer": {
+                    "type":         "custom",
+					#使用html_strip字符过滤器完成HTML标签的移除
+                    "char_filter":  [ "html_strip", "&_to_and" ],
+					#使用standard分词器对文本进行分词
+                    "tokenizer":    "standard",
+					#使用lowercase词条过滤器将所有词条转换为小写
+                    "filter":       [ "lowercase", "my_stopwords" ]
+            }}
+}}}
+
+analyze API对新的解析器进行测试
+GET /my_index/_analyze?analyzer=my_analyzer
+The quick & brown fox
+
+我们需要告诉ES这个解析器应该在什么地方使用。我们可以将它应用在string字段的映射中
+PUT /my_index/_mapping/my_type
+{
+    "properties": {
+        "title": {
+            "type":      "string",
+            "analyzer":  "my_analyzer"
+        }
+    }
+}
+
+
+类型和映射
+ES中类型(Type)代表的是一类相似的文档，一个类型包含了一个名字(Name)以及一个映射(Mapping)
+当使用Lucene对文档进行索引时，每个字段的值都会被添加到倒排索引(Inverted Index)的对应字段中。原始值也可以被选择是否会不作修改的被保存到索引中，以此来方便将来的获取
+Lucene中并没有文档类型这一概念。所以在具体实现中，类型信息通过一个元数据字段_type记录在文档中。Lucene中也没有映射的概念。映射是ES为了对复杂JSON文档进行扁平化(可以被Lucene索引)而设计的一个中间层
+Lucene本身不在意类型一个字段是字符串类型，而另一个字段是日期类型 - 它只是愉快地将它们当做字节数据进行索引。ES会将索引中的所有文档都读入，无论其类型是什么。取决于ES首先发现的字段的类型，它会试图将这些值当做字符串或者日期类型读入。因此，这会产生意料外的结果或者直接失败。
+
+属性(Properties)
+1.type：字段的数据类型，比如string或者date。
+2.index：一个字段是否需要被当做全文(Full text)进行搜索(analyzed)，被当做精确值(Exact value)进行搜索('not_analyzed')，或者不能被搜索(no)。
+3.analyzer：全文字段在索引时(Index time)和搜索时(Search time)使用的analyzer。
+
+元数据：_source字段
+功能
+1.完整的文档在搜索结果中直接就是可用的 - 不需要额外的请求来得到完整文档
+2._source字段让部分更新请求(Partial Update Request)成为可能
+3.当映射发生变化而需要对数据进行重索引(Reindex)时，你可以直接在ES中完成，而不需要从另外一个数据存储(Datastore)(通常较慢)中获取所有文档
+4.在你不需要查看整个文档时，可以从_source直接抽取出个别字段，通过get或者search请求返回
+5.调试查询更容易，因为可以清楚地看到每个文档包含的内容，而不需要根据一个ID列表来对它们的内容进行猜测
+
+禁用_source字段
+PUT /my_index
+{
+    "mappings": {
+        "my_type": {
+            "_source": {
+                "enabled":  false
+            }
+        }
+    }
+}
+
+返回部分字段
+GET /_search
+{
+    "query":   { "match_all": {}},
+    "_source": [ "title", "created" ]
+}
+
+动态映射
+当ES在文档中碰到一个以前没见过的字段时，它会利用动态映射来决定该字段的类型，并自动地对该字段添加映射。
+可以通过dynamic设置来控制这一行为，它能够接受以下的选项：
+1.true：默认值。动态添加字段
+2.false：忽略新字段
+3.strict：如果碰到陌生字段，抛出异常
+PUT /my_index
+{
+    "mappings": {
+        "my_type": {
+            "dynamic":      "strict", 
+            "properties": {
+                "title":  { "type": "string"},
+                "stash":  {
+                    "type":     "object",
+                    "dynamic":  true 
+                }
+            }
+        }
+    }
+}
+
+自定义动态映射
+date_detection
+当ES碰到一个新的字符串字段时，它会检查该字串是否含有一个可被识别的日期，比如2014-01-01。如果存在，那么它会被识别为一个date类型的字段。否则会将它作为string进行添加。
+可以通过在根对象上将date_detection设置为false来关闭日期检测：
+PUT /my_index
+{
+    "mappings": {
+        "my_type": {
+            "date_detection": false
+        }
+    }
+}
+
+dynamic_templates
+通过dynamic_templates，你可以拥有对新字段的动态映射规则拥有完全的控制
+
+模板的匹配是有顺序的 - 第一个匹配的模板会被使用。比如我们可以为string字段指定两个模板：
+1.es：以_es结尾的字段应该使用spanish解析器
+2.en：其它所有字段使用english解析器
+PUT /my_index
+{
+    "mappings": {
+        "my_type": {
+            "dynamic_templates": [
+                { "es": {
+                      "match":              "*_es", 
+                      "match_mapping_type": "string",
+                      "mapping": {
+                          "type":           "string",
+                          "analyzer":       "spanish"
+                      }
+                }},
+                { "en": {
+                      "match":              "*", 
+                      "match_mapping_type": "string",
+                      "mapping": {
+                          "type":           "string",
+                          "analyzer":       "english"
+                      }
+                }}
+            ]
+}}}
+match_mapping_type允许你只对特定类型的字段使用模板，正如标准动态映射规则那样，比如string，long等。
+match参数只会匹配字段名，path_match参数用于匹配对象中字段的完整路径
+
+默认映射(Default Mapping)
+一般情况下，索引中的所有类型都会有相似的字段和设置。因此将这些常用设置在_default映射中指定会更加方便，这样就不需要在每次创建新类型的时候都重复设置。_default映射的角色是新类型的模板。所有在_default映射之后创建的类型都会包含所有的默认设置，除非显式地在类型映射中进行覆盖。
+比如，我们使用_default映射对所有类型禁用_all字段，唯独对blog类型启用它。可以这样实现：
+
+PUT /my_index
+{
+    "mappings": {
+        "_default_": {
+            "_all": { "enabled":  false }
+        },
+        "blog": {
+            "_all": { "enabled":  true  }
+        }
+    }
+}
+
+数据重索引
+虽然你可以向索引中添加新的类型，或者像类型中添加新的字段，但是你不能添加新的解析器或者对现有字段进行修改。如果你这么做了，就会让已经索引的数据变的不正确，导致搜索不能正常的进行。
+为已经存在的数据适用这些更改的最简单的方法就是重索引(Reindex)：新建一个拥有最新配置的索引，然后将所有旧索引中的数据拷贝到新的索引中。
+为了从旧索引中高效地对所有文档进行重索引，可以使用scan和scroll来批量地从旧索引中获取文档，然后使用bulk API将它们添加到新索引中。
+
+索引别名和零停机时间(Index Alias and Zero Downtime)
+使用别名可以给我们非常多的灵活性。它能够让我们：
+1.在一个运行的集群中透明地从一个索引切换到另一个索引
+2.让多个索引形成一个组，比如last_three_months
+3.为一个索引中的一部分文档创建一个视图(View)
+
+零停机时间的前提下，实现了旧索引到新索引的透明切换
+POST /_aliases
+{
+    "actions": [
+        { "remove": { "index": "my_index_v1", "alias": "my_index" }},
+        { "add":    { "index": "my_index_v2", "alias": "my_index" }}
+    ]
+}
+
+创建别名
+PUT /my_index_v1/_alias/my_index 
+得到别名指向的索引：
+GET /*/_alias/my_index
+或者查询指向真实索引的有哪些别名：
+GET /my_index_v1/_alias/*
+
+============索引管理end============
+
+========================================== 检索 start ==========================================
+multi_match查询
+存在几种类型的multi_match查询，其中的3种正好和这几种类型相同：best_fields，most_fields以及cross_fields。
+默认情况下，该查询以best_fields类型执行，它会为每个字段生成一个match查询，然后将这些查询包含在一个dis_max查询中
+
+在字段名中使用通配符
+{
+    "multi_match": {
+        "query":  "Quick brown fox",
+        "fields": "*_title"
+    }
+}
+
+提升个别字段
+{
+    "multi_match": {
+        "query":  "Quick brown fox",
+        "fields": [ "*_title", "chapter_title^2" ] 
+    }
+}
+
+跨域查询(Cross-fields Queries)（与_all字段对比）
+cross_fields类型采用了一种以词条为中心(Term-centric)的方法，这种方法和best_fields及most_fields采用的以字段为中心(Field-centric)的方法有很大的区别。它将所有的字段视为一个大的字段，然后在任一字段中搜索每个词条
+
+
+match_phrase          
+短语匹配(Phrase Matching)---当你需要寻找邻近的几个单词时
+在内部，match_phrase查询使用了低级的span查询族(Query Family)来执行位置感知的查询。span查询是词条级别的查询，因此它们没有解析阶段(Analysis Phase)；它们直接搜索精确的词条。
+match_phrase查询通常已经够好了。但是，对于某些特别的字段，比如专利搜索(Patent Search)，会使用这些低级查询来执行拥有非常特别构造的位置搜索。
+
+短语查询、邻近度查询
+
+prefix查询
+prefix查询是一个工作在词条级别的低级查询。它不会在搜索前对查询字符串进行解析。它假设用户会传入一个需要查询的精确前缀
+默认情况下，prefix查询不会计算相关度分值。它只是进行文档匹配，匹配的文档的分值为1。其实，相比查询它更像一个过滤器。prefix查询和prefix过滤器的唯一区别在于过滤器可以被缓存。
+注意：prefix查询和过滤器对于即时(Ad-hoc)的前缀匹配是有用处的，但是在使用它们的时候需要小心。对于拥有少量词条的字段可以随意地使用，但是它们的扩展性较差，可能会让你的集群承受过多的压力。可以通过使用一个较长的前缀来限制它们对于集群的影响；这能够减少需要访问的词条的数量。
+GET /my_index/address/_search
+{
+    "query": {
+        "prefix": {
+            "postcode": "W1"
+        }
+    }
+}
+
+通配符和正则表达式查询
+wildcard查询和prefix查询类似，也是一个基于词条的低级别查询。但是它能够让你指定一个模式(Pattern)，而不是一个前缀(Prefix)。它使用标准的shell通配符：?用来匹配任意字符，*用来匹配零个或者多个字符
+GET /my_index/address/_search
+{
+    "query": {
+        "wildcard": {
+            "postcode": "W?F*HW" 
+        }
+    }
+}
+
+使用regexp查询能够让你写下更复杂的模式
+GET /my_index/address/_search
+{
+    "query": {
+        "regexp": {
+            "postcode": "W[0-9].+" 
+        }
+    }
+}
+wildcard和regexp查询的工作方式和prefix查询完全一样。它们也需要遍历倒排索引中的词条列表来找到所有的匹配词条，然后逐个词条地收集对应的文档ID。它们和prefix查询的唯一区别在于它们能够支持更加复杂的模式
+这也意味着使用它们存在相同的风险。对一个含有很多不同词条的字段运行这类查询是非常消耗资源的。避免使用一个以通配符开头的模式(比如，*foo或者正则表达式: .*foo)
+注意：prefix，wildcard以及regexp查询基于词条进行操作。如果你在一个analyzed字段上使用了它们，它们会检查字段中的每个词条，而不是整个字段
+比如，假设我们的title字段中含有"Quick brown fox"，它会产生词条quick，brown和fox。
+这个查询能够匹配：
+{ "regexp": { "title": "br.*" }}
+而不会匹配：
+
+{ "regexp": { "title": "Qu.*" }} 
+{ "regexp": { "title": "quick br*" }}
+
+
+match_phrase_prefix查询
+查询期间的即时搜索，和match_phrase查询的工作方式基本相同，支持slop参数
+{
+    "match_phrase_prefix" : {
+        "brand" : {
+            "query":          "johnnie walker bl",
+            "max_expansions": 50
+        }
+    }
+}
+max_expansions参数会控制能够匹配该前缀的词条的数量。它会找到首个以bl开头的词条然后开始收集(以字母表顺序)直到所有以bl开头的词条都被遍历了或者得到了比max_expansions更多的词条。
+
+在查询中指定解析器：
+GET /my_index/my_type/_search
+{
+    "query": {
+        "match": {
+            "name": {
+                "query":    "brown fo",
+                "analyzer": "standard" 
+            }
+        }
+    }
+}
+
+
+
+搜索继续学习？？？？
+========================================== 检索 end ==========================================
+
+
+
+一个分片就是一个Lucene的实例
+主分片的数量在索引建立之初就会被确定下来，而副本分片的数量则可以在任何时候被更改
+
+ES集群节点自动识别
+只要第二个节点也拥有和第一个节点相同的cluster.name(参见./config/elasticsearch.yml文件)，它就能够自动地被识别和添加到第一个节点所在的集群中。如果不是这样的话，检查日志来得到错误信息。错误原因可能是你的网络禁用了多播(Multicast)，或者存在防火墙阻止了节点间的通信
+ES每个分片本身就是一个完整的搜索引擎，它能够完全地利用一个节点上的所有资源。因此，在拥有6个分片(3主，3副本)的情况下，我们的集群最多可以扩展到6个节点，此时每个节点上只有1个分片，因此每个分片就能够拥有该节点100%的资源。
+
+更改集群副本数
+PUT /indexName/_settings
+{
+   "number_of_replicas": 2
+}
+
+ES写数据分片选择
+shard = hash(routing) % number_of_primary_shards
+以上的routing的值是一个任意的字符串，它默认被设置成文档的_id字段，但是也可以被设置成其他指定的值。
+这就解释了为什么索引中的主要分片数量只能在索引创建时被指定，并且将来都不能在被更改：如果主要分片数量在索引创建后改变了，那么之前的所有路由结果都会变的不正确，从而导致文档不能被正确地获取。
+
+主分片数据不可变更，那么该如何水平扩展集群？
+
+
+客户端：
+TIP当发送请求时，最好采用一种循环(Round-robin)的方式来将请求依次发送到每个节点上，从而做到分担负载。
+
+
+搜索
+ES搜索请求需要访问索引中的每个分片来得知它们是否有匹配的文档。
+但是，找到所有匹配的文档只完成了一半的工作。从多个分片中得到的结果需要被合并和排序以得到一个完整的结果，然后search API才能够将结果返回。正因为如此，搜索由两个阶段组成(Two-phase Process) - 查询和获取(Query then Fetch)。
+查询阶段(Query Phase)
+GET /_search
+{
+    "from": 90,
+    "size": 10
+}
+1.客户端发送一个搜索请求到节点3，节点3随即会创建一个大小为from + size的空的优先队列。
+2.节点3将搜索请求转发到索引中每个分片的主分片(Primary Shard)或副本分片(Replica Shard)。然后每个分片会在本地执行该查询，然后将结果保存到本地的一个大小同样为from + size的优先队列中。
+3.每个分片返回优先队列中文档的IDs和它们的排序值到协调节点(Coordinating Node)，也就是节点3。然后节点3负责将所有的结果合并到本地的优先队列中，这个优先队列就是全局的查询结果。
+
+获取阶段(Fetch Phase)
+1.协调节点(Coordinating Node)会首先辨识出哪些文档需要被获取，然后发出一个multi GET请求到相关的分片。
+2.每个分片会读取相关文档并根据要求对它们进行润色(Enrich)，最后将它们返回给协调节点。
+3.一旦所有的文档都被获取了，协调节点会将结果返回给客户端。
+
+深度分页(Deep Pagination)
+查询并获取(Query then Fetch)的过程支持通过传入的from和size参数来完成分页功能。但是该功能存在限制。不要忘了每个分片都会在本地保存一个大小为from + size的优先队列，该优先队列中的所有内容都需要被返回给协调节点。然后协调节点需要对number_of_shards * (from + size)份文档进行排序来保证最后能够得到正确的size份文档。
+根据文档的大小，分片的数量以及你正在使用的硬件，对10000到50000个结果进行分页(1000到5000页)是可以很好地完成的。但是当from值大的一定程度，排序就会变成非常消耗CPU，内存和带宽等资源的行为。因为如此，我们强烈地建议你不要使用深度分页。
+实践中，深度分页返回的页数实际上是不切实际的。用户往往会在浏览了2到3页后就会修改他们的搜索条件。
+
+搜索选项(Search Options)
+preference
+该参数能够让你控制哪些分片或者节点会用来处理搜索请求。它能够接受：_primary，_primary_first，_local，_only_node:xyz，_prefer_node:xyz以及_shards:2,3这样的值
+
+结果跳跃(Bouncing Results)
+比如当你使用一个timestamp字段对结果进行排序，有两份文档拥有相同的timestamp。因为搜索请求是以一种循环(Round-robin)的方式被可用的分片拷贝进行处理的，因此这两份文档的返回顺序可能因为处理的分片不一样而不同，比如主分片处理的顺序和副本分片处理的顺序就可能不一样。
+这就是结果跳跃问题：每次用户刷新页面都会发现结果的顺序不一样。
+这个问题可以通过总是为相同用户指定同样的分片来避免：将preference参数设置为一个任意的字符串，比如用户的会话ID(Session ID)。
+
+timeout
+timeout参数告诉协调节点它在放弃前要等待多长时间。如果放弃了，它会直接返回当前已经有的结果。
+...
+    "timed_out":     true,  
+    "_shards": {
+       "total":      5,
+       "successful": 4,
+       "failed":     1 
+    },
+...
+
+routing
+在搜索时，相比搜索索引中的所有分片，你可以指定一个或者多个routing值来限制搜索的范围到特定的分片上
+GET /_search?routing=user_1,user2
+
+search_type
+query_then_fetch（默认）
+count搜索类型只有查询阶段。当你不需要搜索结果的时候可以使用它，它只会返回匹配的文档数量或者聚合(Aggregation)结果
+scan搜索类型会和scroll API一起使用来高效的获取大量的结果。它通过禁用排序来完成。不会有深度分页(Deep Pagination)中存在的问题
+scroll一个滚动搜索会生成一个实时快照(Snapshot) - 它不会发现在初始搜索后，索引发生的任何变化。它通过将老的数据文件保存起来来完成这一点，因此它能够保存一个在它开始时索引的视图(View)。
+scan它告诉ES不要执行排序，只是让每个还有结果可以返回的分片返回下一批结果
+
+为了使用scan和scroll，我们将搜索类型设置为scan，同时传入一个scroll参数来告诉ES，scroll会开放多长时间
+GET /old_index/_search?search_type=scan&scroll=1m 
+{
+    "query": { "match_all": {}},
+    "size":  1000
+}
+以上请求会让scroll开放一分钟。
+此请求的响应不会含有任何的结果，但是它会含有一个_scroll_id，它是一个通过Base64编码的字符串。现在可以通过将_scroll_id发送到_search/scroll来获取第一批结果：
+
+GET /_search/scroll?scroll=1m 
+c2Nhbjs1OzExODpRNV9aY1VyUVM4U0NMd2pjWlJ3YWlBOzExOTpRNV9aY1VyUVM4U0 
+NMd2pjWlJ3YWlBOzExNjpRNV9aY1VyUVM4U0NMd2pjWlJ3YWlBOzExNzpRNV9aY1Vy
+UVM4U0NMd2pjWlJ3YWlBOzEyMDpRNV9aY1VyUVM4U0NMd2pjWlJ3YWlBOzE7dG90YW
+xfaGl0czoxOw==
+注意我们又一次指定了?scroll=1m。scroll的过期时间在每次执行scroll请求后都会被刷新，因此它只需要给我们足够的时间来处理当前这一批结果，而不是匹配的所有文档。
+scroll请求还会返回一个新的_scroll_id。每次我们执行下一个scroll请求时，都需要传入上一个scroll请求返回的_scroll_id。当没有结果被返回是，我们就处理完了所有匹配的文档。
+
+
+
+
+
+elasticsearch去重计数（distinct）
+POST _search?search_type=count
+{
+  "aggs": {
+    "uniq_attr": {
+      "cardinality": {
+        "field": "age"
+      }
+    }
+  }
+}
+
+filtered查询
+GET /cars/transactions/_search?search_type=count
+{
+    "query" : {
+        "filtered": {
+            "filter": {
+                "range": {
+                    "price": {
+                        "gte": 10000
+                    }
+                }
+            }
+        }
+    },
+    "aggs" : {
+        "single_avg_price": {
+            "avg" : { "field" : "price" }
+        }
+    }
+}
+该查询(包含了一个过滤器)返回文档的一个特定子集，然后聚合工作在该子集上。
+
+过滤桶(Filter Bucket)
+如果你只想过滤聚合结果呢？假设我们正在创建针对汽车交易的搜索页面，我们想要根据用户搜索内容来展示对应结果。但是我们也想通过包含上个月出售的汽车的平均价格(匹配搜索的汽车)来让页面更加丰富。
+此时我们不能使用简单的作用域，因为有两个不同搜索条件。搜索结果必须要匹配ford，但是聚合结果必须要匹配ford以及售出时间为上个月。
+GET /cars/transactions/_search?search_type=count
+{
+   "query":{
+      "match": {
+         "make": "ford"
+      }
+   },
+   "aggs":{
+      "recent_sales": {
+         "filter": { 
+            "range": {
+               "sold": {
+                  "from": "now-1M"
+               }
+            }
+         },
+         "aggs": {
+            "average_price":{
+               "avg": {
+                  "field": "price" 
+               }
+            }
+         }
+      }
+   }
+}
+
+后置过滤器(Post Filter)
+只过滤搜索结果，而不过滤聚合
+
+
+通配符查询（模糊匹配，支持*和?）
+{
+  "query": {
+    "wildcard": {
+      "camera_index_code": "camera-YX*"
+    }
+  }
+}
+
+
+
+
+
+
+
+
+1.validate-query API
+GET /_validate/query?explain
+{
+  "query": {
+    "multi_match": {
+      "query":   "Poland Street W1V",
+      "type":    "most_fields",
+      "fields":  [ "street", "city", "country", "postcode" ]
+    }
+  }
+}
+
+2.GET /_analyze?analyzer=standard
+
+索引时的解析方式
+GET /my_index/_analyze?field=my_type.title   
+Foxes
+
+3.update-mapping API:
+PUT /my_index/_mapping/my_type
+{
+    "my_type": {
+        "properties": {
+            "name": {
+                "type":     "string",
+                "analyzer": "autocomplete"
+            }
+        }
+    }
+}
+
+4.批量建索引
+POST /my_index/my_type/_bulk
+POST /my_index/my_type/_bulk
+{ "index": { "_id": 1            }}
+{ "name": "Brown foxes"    }
+{ "index": { "_id": 2            }}
+{ "name": "Yellow furballs" }

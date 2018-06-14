@@ -1,0 +1,78 @@
+参考官方文档：https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-query-string-query.html
+
+
+1.例子
+{
+      "query_string":{
+            "default_field":"name",
+            "query":"(this AND that) OR thu*"
+       }
+}
+
+
+2. 参数
+这里只挑几个常用的参数说一下，其他的一般默认就够了
+query：  需要查询的具体内容
+default_field：  查询的字段
+默认是_all，即对所有字段进行查询。
+支持多字段——"fields" : ["age", "name"],fields中只要有一个字段满足query的条件即可匹配查询。
+支持一些简单的wildcard写法。比如fields:[“nam*”]即任何nam开头的字段，注意：如果field与query写在一起比如”query”:”name:obama”，要使用wildcard需要转义--->”query”:”nam\\*:obama”
+当fields有多个的时候，会有另外一个参数：
+use_dis_max： true代表使用dis_max查询，false为bool查询
+至于use_dis_max的用法：请参考http://blog.csdn.net/dm_vincent/article/details/41820537
+
+default_operator：默认运算符
+   有AND、OR，默认为OR。比如query里面的内容是”cat dog”，两个短语以空格分开，如果default_operator参数为OR，那么只要字段内包含cat或者dog之一就可以匹配。
+  如果default_operator为AND，字段内必须同时包含cat和dog才可以匹配。与bool查询挺像的。
+analyzer：分析器
+   用于分析query内容的分析器。 
+       这里需要注意的是query_string查询，query的内容会经过分析。其他的查询比如match查询也是会分析的，term查询会分析。打个比方：
+               PUT /animal { "name": “DOG”}
+   因为分析器的原因，进行index的时候DOG会自动变成小写的dog.query_string与match查询因为查询的内容也会被分析，所以查询DOG时会自动判断为查询dog。而term查询不然，你查询DOG，
+      那么Elasticsearch就会去索引里    找DOG，很显然索引里只有小写的dog，你是无法查询成功的。
+minimum_should_match： 最小匹配词条
+   比如query:”cat dog mouse”,这个配置项为2，那么只有字段里至少同时包含这三个中的任意两个才会匹配。需要注意的是，这个配置项只对default_operator为OR的时候生效。如果这个是AND，
+   那么cat dog mouse必须全部包含无论minimum_should_match为多少。
+
+
+3.语法
+常见写法：
+{“query”:{“query_string”:{“name:obama”}}}
+name字段为obama
+{“query”:{“query_string”:{“nam\\*:obama”}}}
+存在一个nam开头的字段，值为obama
+{“query”:{“query_string”:{“__missing__:name”}}}
+name字段值为null的文档
+{“query”:{“query_string”:{“__exists__:name”}}}
+name字段值不为null的文档
+{“query”:{“query_string”:{“name:（obama OR xidada)”}}}
+name字段为Obama或者xidada的文档
+
+注意这里！一定不要把这里的OR、AND与前面的混淆，minimum_should_match更需要注意运算符。如果这里全是OR，那么你可以用minimum_should_match，如果混用AND OR 一定不要用这个参数。如果一定要用请把AND连接的用()括起来。
+另外a OR b OR c.minimum_should_match为3代表 需要包含a b c三个。如果你用括号括起来(a OR b) OR c 那么括号内的将不是两个条件而是一个整体的条件，minimum_should_match为2 即代表需要同时包含a b c三个。
+
+Wildcards
+query的内容中支持？与*。？可以代替一个任意字符、 *可代表任意个字符（包括零个）。比如你要查询的内容很长，记不清了但是你记得末尾是tor，那么你只需要把query内容写成*tor即可
+
+正则
+如果要在query的内容中使用正则表达式，在两端加上正斜杠/即可。比如name:/ob[am]{2}a/
+支持的正则语法见：
+https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-regexp-query.html#regexp-syntax
+
+模糊查询
+这个是一个很实用的功能。你想搜obama可是你记不清了或者你错打成了obalv。没事，只要你在查询的时候加个~就不用担心了: “query”:”name:obalv~”，你会惊喜的发现仍然可以搜到obama。
+另外你可以在~后面加个数字来指定允许错误几个字母。默认以及最大都是2。比如你写成“query”:”name:obalv~1”，就只能允许一个错误，而你查询的内容错了两个字母，就无法搜到obama了。
+
+range范围查询
+具体语法为：[min TO max] 闭区间。{min TO max}开区间。不允许左闭右开！左开右闭！
+ 
+date:[2012-01-01 TO 2012-12-31]
+count:[1 TO 5]
+count:[10 TO *]
+age:>10
+age:<=10
+
+布尔运算符
+这一章最开头提到了一些OR、AND。另外支持的运算符有+、-
++代表一定要出现：类似must。-代表一定不能包含：类似must_not
+比如："query":"cat -dog +mouse"  这个就代表文档中必须包含mouse，必须不能包含dog
