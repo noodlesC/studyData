@@ -1,3 +1,2 @@
-ftp://hikftp.hikvision.com:2200/bigdata/vsp/%BB%F9%CF%DF%B0%E6%B1%BE/V1.0.1/release/cloudmanager_installer_2.1.2_VSP_1.0.1_27496_build20170303_release.tar.gz
-ÓÃ»§Ãû:guest
-ÃÜÂë£º123456
+
+a
